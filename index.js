@@ -3,6 +3,9 @@ import mysql from 'mysql2';
 import cors from 'cors';
 import bcrypt from 'bcrypt';
 import dotenv from 'dotenv';
+import speechToTextRoutes from './routes/speechToText.js';
+import translationRoutes from './routes/translation.js';
+import prescriptionRoutes from './routes/prescription.js';
 
 dotenv.config();
 
@@ -123,6 +126,10 @@ app.post('/api/login', async (req, res) => {
     res.status(500).json({ error: 'Server error' });
   }
 });
+
+app.use('/api/speech', speechToTextRoutes);
+app.use('/api/translate', translationRoutes);
+app.use('/api/prescription', prescriptionRoutes);
 
 const PORT = process.env.PORT || 8000;
 app.listen(PORT, () => {
