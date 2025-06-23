@@ -136,4 +136,41 @@ router.get('/languages', async (req, res) => {
   }
 });
 
+router.post('/detect', async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text) {
+      return res.status(400).json({ error: 'Text is required for language detection' });
+    }
+    if (!GOOGLE_TRANSLATION_API_KEY) {
+      return res.status(500).json({ error: 'Google Translation API key not configured' });
+    }
+
+    const response = await axios.post(
+      `https://translation.googleapis.com/language/translate/v2/detect?key=${GOOGLE_TRANSLATION_API_KEY}`,
+      { q: text },
+      {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 10000,
+      }
+    );
+
+    if (
+      response.data &&
+      response.data.data &&
+      response.data.data.detections &&
+      response.data.data.detections[0] &&
+      response.data.data.detections[0][0]
+    ) {
+      const detection = response.data.data.detections[0][0];
+      res.json({ language: detection.language, confidence: detection.confidence });
+    } else {
+      throw new Error('Invalid response from language detection API');
+    }
+  } catch (error) {
+    console.error('Language detection error:', error);
+    res.status(500).json({ error: 'Failed to detect language' });
+  }
+});
+
 export default router;

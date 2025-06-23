@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 import speechToTextRoutes from './routes/speechToText.js';
 import translationRoutes from './routes/translation.js';
 import prescriptionRoutes from './routes/prescription.js';
+import transcriptAnalysisRoutes from './routes/transcriptAnalysis.js';
 
 dotenv.config();
 
@@ -225,6 +226,7 @@ app.get('/api/test', (req, res) => {
 app.use('/api/speech', speechToTextRoutes);
 app.use('/api/translate', translationRoutes);
 app.use('/api/prescription', prescriptionRoutes);
+app.use('/api/transcript', transcriptAnalysisRoutes);
 
 const PORT = process.env.PORT || 8000;
 app.listen(PORT, () => {
