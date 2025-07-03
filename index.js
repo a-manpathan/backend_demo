@@ -22,16 +22,23 @@ const dbConfig = {
   database: process.env.DB_DATABASE,
   port: parseInt(process.env.DB_PORT) || 1433,
   options: {
-    encrypt: true, // Required for Azure SQL
+    encrypt: true,
     trustServerCertificate: false,
-    connectTimeout: 30000, // Increased to 30 seconds
-    requestTimeout: 30000, // Added request timeout
-    cancelTimeout: 5000, // Added cancel timeout
+    connectTimeout: 30000,
+    requestTimeout: 30000,
+    cancelTimeout: 5000,
     pool: {
-      max: 10,
-      min: 0,
-      idleTimeoutMillis: 30000,
+      max: 20, // Increased pool size
+      min: 2,  // Keep minimum connections
+      idleTimeoutMillis: 60000, // Increased idle timeout
+      acquireTimeoutMillis: 30000,
+      createTimeoutMillis: 30000,
+      destroyTimeoutMillis: 5000,
+      reapIntervalMillis: 1000,
+      createRetryIntervalMillis: 200,
     },
+    enableArithAbort: true,
+    abortTransactionOnError: true,
   },
 };
 
@@ -104,8 +111,8 @@ const createTablesIfNotExist = async () => {
   }
 
   try {
-    console.log('Creating tables if they don\'t exist...');
-    
+    console.log('Creating tables if they don’t exist...');
+
     const createUsersTable = `
       IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'users')
       BEGIN
@@ -114,22 +121,61 @@ const createTablesIfNotExist = async () => {
           name NVARCHAR(255) NOT NULL,
           email NVARCHAR(255) UNIQUE NOT NULL,
           password NVARCHAR(255) NOT NULL,
-          user_type NVARCHAR(50) NOT NULL
-            CHECK (user_type IN ('admin', 'doctor')),
+          user_type NVARCHAR(50) NOT NULL,
+          CONSTRAINT CK_users_user_type CHECK (user_type IN ('admin', 'doctor', 'patient')),
           specialization NVARCHAR(255) NULL,
           hospital NVARCHAR(255) NULL,
           created_at DATETIME2 DEFAULT GETDATE(),
           updated_at DATETIME2 DEFAULT GETDATE()
         );
       END;
+
+      IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'doctors')
+      BEGIN
+        CREATE TABLE doctors (
+          id INT IDENTITY(1,1) PRIMARY KEY,
+          id_number NVARCHAR(50) NOT NULL,
+          name NVARCHAR(255) NOT NULL,
+          email NVARCHAR(255) UNIQUE NOT NULL,
+          specialization NVARCHAR(255) NOT NULL,
+          location NVARCHAR(255) NOT NULL,
+          contact NVARCHAR(50) NOT NULL,
+          status NVARCHAR(50) DEFAULT 'Active',
+          image_url NVARCHAR(MAX),
+          join_date DATE DEFAULT GETDATE()
+        );
+      END;
     `;
 
     const request = dbPool.request();
     await request.query(createUsersTable);
-    console.log('✅ Users table ready');
-    
+    console.log('✅ Users and Doctors tables ready');
+
+    // Check if the CHECK constraint needs updating
+    const checkConstraintQuery = `
+      SELECT name
+      FROM sys.check_constraints
+      WHERE parent_object_id = OBJECT_ID('users')
+      AND definition NOT LIKE '%patient%';
+    `;
+
+    const constraintResult = await request.query(checkConstraintQuery);
+
+    if (constraintResult.recordset.length > 0) {
+      const constraintName = constraintResult.recordset[0].name;
+      console.log(`Found outdated constraint: ${constraintName}`);
+
+      const updateConstraint = `
+        ALTER TABLE users DROP CONSTRAINT [${constraintName}];
+        ALTER TABLE users ADD CONSTRAINT CK_users_user_type CHECK (user_type IN ('admin', 'doctor', 'patient'));
+      `;
+      await request.query(updateConstraint);
+      console.log('✅ User type constraint updated');
+    } else {
+      console.log('✅ No constraint update needed');
+    }
   } catch (err) {
-    console.error('❌ Error creating users table:', err);
+    console.error('❌ Error creating users or doctors table:', err);
   }
 };
 
@@ -180,44 +226,36 @@ const checkDbConnection = (req, res, next) => {
 
 // Signup endpoint with connection check
 app.post('/api/signup', checkDbConnection, async (req, res) => {
-  console.log('Signup request received:', req.body);
   const { name, email, password, userType, specialization, hospital } = req.body;
 
+  // Validation
   if (!name || !email || !password || !userType) {
-    console.log('Missing required fields:', {
-      name: !!name,
-      email: !!email,
-      password: !!password,
-      userType: !!userType,
-    });
     return res.status(400).json({ error: 'Missing required fields' });
   }
   
   if (userType === 'doctor' && (!specialization || !hospital)) {
-    console.log('Missing doctor fields:', {
-      specialization: !!specialization,
-      hospital: !!hospital,
-    });
     return res.status(400).json({ error: 'Specialization and hospital required for doctors' });
   }
   
-  if (userType !== 'admin' && userType !== 'doctor') {
-    console.log('Invalid user type:', userType);
+  if (!['admin', 'doctor', 'patient'].includes(userType)) {
     return res.status(400).json({ error: 'Invalid user type' });
   }
 
+  let request;
   try {
-    const saltRounds = 10;
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
-    console.log('Password hashed successfully');
-
-    const request = dbPool.request();
-    const query = `
-      INSERT INTO users (name, email, password, user_type, specialization, hospital)
-      OUTPUT INSERTED.id
-      VALUES (@name, @email, @password, @userType, @specialization, @hospital)
-    `;
+    // Check if email exists first (optimized query)
+    request = dbPool.request();
+    const existingUser = await request
+      .input('email', sql.NVarChar, email)
+      .query('SELECT id FROM users WHERE email = @email');
     
+    if (existingUser.recordset.length > 0) {
+      return res.status(400).json({ error: 'Email already exists' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    request = dbPool.request();
     const result = await request
       .input('name', sql.NVarChar, name)
       .input('email', sql.NVarChar, email)
@@ -225,63 +263,54 @@ app.post('/api/signup', checkDbConnection, async (req, res) => {
       .input('userType', sql.NVarChar, userType)
       .input('specialization', sql.NVarChar, userType === 'doctor' ? specialization : null)
       .input('hospital', sql.NVarChar, userType === 'doctor' ? hospital : null)
-      .query(query);
+      .query(`
+        INSERT INTO users (name, email, password, user_type, specialization, hospital)
+        OUTPUT INSERTED.id
+        VALUES (@name, @email, @password, @userType, @specialization, @hospital)
+      `);
 
-    const userId = result.recordset[0].id;
-    console.log('User created successfully with ID:', userId);
-    res.status(201).json({ message: 'User created successfully', id: userId });
+    res.status(201).json({ 
+      message: 'User created successfully', 
+      id: result.recordset[0].id 
+    });
     
   } catch (error) {
-    console.error('Server error in signup:', error);
-    if (error.message && error.message.includes('Violation of UNIQUE KEY constraint')) {
-      return res.status(400).json({ error: 'Email already exists' });
-    }
-    res.status(500).json({ error: 'Server error: ' + error.message });
+    console.error('Signup error:', error.message);
+    res.status(500).json({ error: 'Server error occurred' });
   }
 });
 
 // Login endpoint with connection check
 app.post('/api/login', checkDbConnection, async (req, res) => {
-  console.log('Login request received:', { email: req.body.email, userType: req.body.userType });
   const { email, password, userType } = req.body;
 
   if (!email || !password || !userType) {
-    console.log('Missing required fields in login:', {
-      email: !!email,
-      password: !!password,
-      userType: !!userType,
-    });
     return res.status(400).json({ error: 'Missing required fields' });
   }
   
-  if (userType !== 'admin' && userType !== 'doctor') {
-    console.log('Invalid user type in login:', userType);
+  if (!['admin', 'doctor', 'patient'].includes(userType)) {
     return res.status(400).json({ error: 'Invalid user type' });
   }
 
   try {
     const request = dbPool.request();
-    const query = 'SELECT * FROM users WHERE email = @email AND user_type = @userType';
     const result = await request
       .input('email', sql.NVarChar, email)
       .input('userType', sql.NVarChar, userType)
-      .query(query);
-
-    console.log('Login query results count:', result.recordset.length);
+      .query('SELECT id, name, email, password, user_type FROM users WHERE email = @email AND user_type = @userType');
 
     if (result.recordset.length === 0) {
-      return res.status(401).json({ error: 'Invalid email, user type, or password' });
+      return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     const user = result.recordset[0];
     const passwordMatch = await bcrypt.compare(password, user.password);
+    
     if (!passwordMatch) {
-      console.log('Password mismatch for user:', email);
-      return res.status(401).json({ error: 'Invalid email, user type, or password' });
+      return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    console.log('Login successful for user:', email);
-    res.status(200).json({
+    res.json({
       message: 'Login successful',
       user: {
         id: user.id,
@@ -291,8 +320,8 @@ app.post('/api/login', checkDbConnection, async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('Server error in login:', error);
-    res.status(500).json({ error: 'Server error: ' + error.message });
+    console.error('Login error:', error.message);
+    res.status(500).json({ error: 'Server error occurred' });
   }
 });
 
