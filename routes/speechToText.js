@@ -1,10 +1,12 @@
 import express from 'express';
 import axios from 'axios';
+import {io} from './socketSetup.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
 const router = express.Router();
+//const speechClient = new SpeechClient();
 
 // Get API key from environment variables
 const GOOGLE_API_KEY = process.env.GOOGLE_APPLICATION_CREDENTIALS;
@@ -22,6 +24,7 @@ router.post('/transcribe', async (req, res) => {
     }
 
     console.log('Received transcription request for language:', languageCode);
+    console.log('Audio content size:', audioContent.length, 'characters');
 
     const audioConfigs = [
       { encoding: 'WEBM_OPUS', sampleRateHertz: 48000, description: 'WebM Opus' },
@@ -55,7 +58,9 @@ router.post('/transcribe', async (req, res) => {
             headers: {
               'Content-Type': 'application/json',
             },
-            timeout: 30000,
+            timeout: 60000, // Increased timeout for longer audio
+            maxContentLength: 52428800, // 50MB
+            maxBodyLength: 52428800, // 50MB
           }
         );
 
@@ -78,6 +83,7 @@ router.post('/transcribe', async (req, res) => {
       : '';
 
     console.log('Transcription successful:', transcription.substring(0, 100) + '...');
+    io.emit('transcript', transcription);
     res.json({ transcript: transcription });
   } catch (error) {
     console.error('Speech-to-text error:', error.response?.data || error.message);

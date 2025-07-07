@@ -1,18 +1,62 @@
 import express from 'express';
 import sql from 'mssql';
 import cors from 'cors';
+//import { io, server } from './socketSetup.js';
 import bcrypt from 'bcrypt';
 import dotenv from 'dotenv';
 import speechToTextRoutes from './routes/speechToText.js';
 import translationRoutes from './routes/translation.js';
 import prescriptionRoutes from './routes/prescription.js';
 import transcriptAnalysisRoutes from './routes/transcriptAnalysis.js';
+import { CommunicationIdentityClient } from '@azure/communication-identity';
+import http from 'http';
+import { Server } from 'socket.io';
 
 dotenv.config();
 
 const app = express();
-app.use(express.json());
-app.use(cors());
+
+// Configure CORS properly
+app.use(cors({
+  origin: ['http://localhost:8080', 'http://localhost:3000'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
+
+// Increase payload limits for audio files
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// Create HTTP server
+const server = http.createServer(app);
+
+// Initialize Socket.io
+const io = new Server(server);
+
+io.on('connection', (socket) => {
+  console.log('A client connected');
+  socket.on('disconnect', () => {
+    console.log('A client disconnected');
+  });
+});
+
+const connectionString = process.env.ACS;
+const identityClient = new CommunicationIdentityClient(connectionString);
+
+app.get('/get-token', async (req, res) => {
+  try {
+    const userIdentity = await identityClient.createUser();
+    const tokenResponse = await identityClient.getToken(userIdentity, ['voip', 'chat']);
+    res.json({
+      userId: userIdentity.communicationUserId,
+      token: tokenResponse.token,
+      expiresOn: tokenResponse.expiresOn
+    });
+  } catch (error) {
+    res.status(500).send(error.message);
+  }
+});
 
 // Azure SQL Database connection configuration
 const dbConfig = {
@@ -59,15 +103,12 @@ const connectDb = async () => {
     
     dbPool = new sql.ConnectionPool(dbConfig);
     
-    // Add error handler before connecting
     dbPool.on('error', (err) => {
       console.error('Azure SQL Pool Error:', err);
       isConnected = false;
       if (err.code === 'ETIMEDOUT' || err.code === 'ECONNRESET' || err.code === 'ECONNCLOSED') {
         console.log('Connection lost. Attempting to reconnect in 5 seconds...');
-        setTimeout(() => {
-          connectDb();
-        }, 5000);
+        setTimeout(() => connectDb(), 5000);
       }
     });
 
@@ -75,7 +116,6 @@ const connectDb = async () => {
     isConnected = true;
     console.log('✅ Successfully connected to Azure SQL Database');
     
-    // Create tables after successful connection
     await createTablesIfNotExist();
     
   } catch (err) {
@@ -86,7 +126,6 @@ const connectDb = async () => {
       originalError: err.originalError?.message || 'No additional details'
     });
     
-    // Log specific troubleshooting info
     if (err.code === 'ETIMEOUT') {
       console.log('🔧 Troubleshooting tips:');
       console.log('1. Check if your IP is whitelisted in Azure SQL firewall rules');
@@ -95,11 +134,7 @@ const connectDb = async () => {
       console.log('4. Check if you\'re behind a corporate firewall blocking port 1433');
     }
     
-    // Retry connection after 10 seconds
-    setTimeout(() => {
-      console.log('Retrying database connection...');
-      connectDb();
-    }, 10000);
+    setTimeout(() => connectDb(), 10000);
   }
 };
 
@@ -182,7 +217,7 @@ const createTablesIfNotExist = async () => {
 // Initialize database connection
 connectDb();
 
-// Health check endpoint with better error handling
+// Health check endpoint
 app.get('/api/health', async (req, res) => {
   try {
     if (!isConnected || !dbPool) {
@@ -194,7 +229,6 @@ app.get('/api/health', async (req, res) => {
       });
     }
 
-    // Test the connection with a simple query
     const request = dbPool.request();
     await request.query('SELECT 1 as test');
     
@@ -217,14 +251,12 @@ app.get('/api/health', async (req, res) => {
 // Middleware to check database connection
 const checkDbConnection = (req, res, next) => {
   if (!isConnected || !dbPool) {
-    return res.status(503).json({ 
-      error: 'Database connection not available. Please try again later.' 
-    });
+    return res.status(503).json({ error: 'Database connection not available. Please try again later.' });
   }
   next();
 };
 
-// Signup endpoint with connection check
+// Signup endpoint
 app.post('/api/signup', checkDbConnection, async (req, res) => {
   const { name, email, password, userType, specialization, hospital } = req.body;
 
@@ -280,7 +312,7 @@ app.post('/api/signup', checkDbConnection, async (req, res) => {
   }
 });
 
-// Login endpoint with connection check
+// Login endpoint
 app.post('/api/login', checkDbConnection, async (req, res) => {
   const { email, password, userType } = req.body;
 
@@ -358,7 +390,10 @@ process.on('SIGTERM', async () => {
 });
 
 const PORT = process.env.PORT || 8000;
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📊 Health check available at http://localhost:${PORT}/api/health`);
 });
+
+// Initialize database connection
+connectDb();
