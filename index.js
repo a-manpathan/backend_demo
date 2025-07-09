@@ -1,7 +1,6 @@
 import express from 'express';
 import sql from 'mssql';
 import cors from 'cors';
-//import { io, server } from './socketSetup.js';
 import bcrypt from 'bcrypt';
 import dotenv from 'dotenv';
 import speechToTextRoutes from './routes/speechToText.js';
@@ -18,7 +17,7 @@ const app = express();
 
 // Configure CORS properly
 app.use(cors({
-  origin: ['http://localhost:8080', 'http://localhost:3000'],
+  origin: ['http://localhost:8080','http://192.168.2.6:8080'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
@@ -32,7 +31,13 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 const server = http.createServer(app);
 
 // Initialize Socket.io
-const io = new Server(server);
+const io = new Server(server, {
+  cors: {
+    origin: ['http://localhost:8080','http://192.168.2.6:8080'], // Match frontend origins
+    methods: ['GET', 'POST'],
+    credentials: true
+  }
+});
 
 io.on('connection', (socket) => {
   console.log('A client connected');
@@ -43,20 +48,6 @@ io.on('connection', (socket) => {
 
 const connectionString = process.env.ACS;
 const identityClient = new CommunicationIdentityClient(connectionString);
-
-app.get('/get-token', async (req, res) => {
-  try {
-    const userIdentity = await identityClient.createUser();
-    const tokenResponse = await identityClient.getToken(userIdentity, ['voip', 'chat']);
-    res.json({
-      userId: userIdentity.communicationUserId,
-      token: tokenResponse.token,
-      expiresOn: tokenResponse.expiresOn
-    });
-  } catch (error) {
-    res.status(500).send(error.message);
-  }
-});
 
 // Azure SQL Database connection configuration
 const dbConfig = {
@@ -89,6 +80,14 @@ const dbConfig = {
 // Global connection pool
 let dbPool = null;
 let isConnected = false;
+
+// Middleware to check database connection - MOVED HERE BEFORE USAGE
+const checkDbConnection = (req, res, next) => {
+  if (!isConnected || !dbPool) {
+    return res.status(503).json({ error: 'Database connection not available. Please try again later.' });
+  }
+  next();
+};
 
 const connectDb = async () => {
   try {
@@ -146,7 +145,7 @@ const createTablesIfNotExist = async () => {
   }
 
   try {
-    console.log('Creating tables if they don’t exist...');
+    console.log('Creating tables if they don\'t exist...');
 
     const createUsersTable = `
       IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'users')
@@ -160,6 +159,7 @@ const createTablesIfNotExist = async () => {
           CONSTRAINT CK_users_user_type CHECK (user_type IN ('admin', 'doctor', 'patient')),
           specialization NVARCHAR(255) NULL,
           hospital NVARCHAR(255) NULL,
+          acs_user_id NVARCHAR(255) NULL,
           created_at DATETIME2 DEFAULT GETDATE(),
           updated_at DATETIME2 DEFAULT GETDATE()
         );
@@ -177,7 +177,8 @@ const createTablesIfNotExist = async () => {
           contact NVARCHAR(50) NOT NULL,
           status NVARCHAR(50) DEFAULT 'Active',
           image_url NVARCHAR(MAX),
-          join_date DATE DEFAULT GETDATE()
+          join_date DATE DEFAULT GETDATE(),
+          acs_user_id NVARCHAR(255) NULL
         );
       END;
     `;
@@ -217,6 +218,37 @@ const createTablesIfNotExist = async () => {
 // Initialize database connection
 connectDb();
 
+// Routes that need database connection
+app.get('/get-token', async (req, res) => {
+  try {
+    const userIdentity = await identityClient.createUser();
+    const tokenResponse = await identityClient.getToken(userIdentity, ['voip', 'chat']);
+    res.json({
+      userId: userIdentity.communicationUserId,
+      token: tokenResponse.token,
+      expiresOn: tokenResponse.expiresOn
+    });
+  } catch (error) {
+    res.status(500).send(error.message);
+  }
+});
+
+app.get('/api/get-doctor-acs-id', checkDbConnection, async (req, res) => {
+  try {
+    const request = dbPool.request();
+    const result = await request
+      .query('SELECT acs_user_id FROM users WHERE user_type = \'doctor\' AND id = 9'); // Adjust query logic
+    if (result.recordset.length > 0) {
+      res.json({ acsUserId: result.recordset[0].acs_user_id });
+    } else {
+      res.status(404).json({ error: 'Doctor not found' });
+    }
+  } catch (error) {
+    console.error('Error fetching doctor ACS ID:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Health check endpoint
 app.get('/api/health', async (req, res) => {
   try {
@@ -248,19 +280,10 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
-// Middleware to check database connection
-const checkDbConnection = (req, res, next) => {
-  if (!isConnected || !dbPool) {
-    return res.status(503).json({ error: 'Database connection not available. Please try again later.' });
-  }
-  next();
-};
-
 // Signup endpoint
 app.post('/api/signup', checkDbConnection, async (req, res) => {
   const { name, email, password, userType, specialization, hospital } = req.body;
 
-  // Validation
   if (!name || !email || !password || !userType) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
@@ -275,7 +298,6 @@ app.post('/api/signup', checkDbConnection, async (req, res) => {
 
   let request;
   try {
-    // Check if email exists first (optimized query)
     request = dbPool.request();
     const existingUser = await request
       .input('email', sql.NVarChar, email)
@@ -287,6 +309,10 @@ app.post('/api/signup', checkDbConnection, async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    // Create ACS identity
+    const userIdentity = await identityClient.createUser();
+    const acsUserId = userIdentity.communicationUserId;
+
     request = dbPool.request();
     const result = await request
       .input('name', sql.NVarChar, name)
@@ -295,17 +321,18 @@ app.post('/api/signup', checkDbConnection, async (req, res) => {
       .input('userType', sql.NVarChar, userType)
       .input('specialization', sql.NVarChar, userType === 'doctor' ? specialization : null)
       .input('hospital', sql.NVarChar, userType === 'doctor' ? hospital : null)
+      .input('acsUserId', sql.NVarChar, acsUserId)
       .query(`
-        INSERT INTO users (name, email, password, user_type, specialization, hospital)
+        INSERT INTO users (name, email, password, user_type, specialization, hospital, acs_user_id)
         OUTPUT INSERTED.id
-        VALUES (@name, @email, @password, @userType, @specialization, @hospital)
+        VALUES (@name, @email, @password, @userType, @specialization, @hospital, @acsUserId)
       `);
 
     res.status(201).json({ 
       message: 'User created successfully', 
-      id: result.recordset[0].id 
+      id: result.recordset[0].id,
+      acsUserId: acsUserId
     });
-    
   } catch (error) {
     console.error('Signup error:', error.message);
     res.status(500).json({ error: 'Server error occurred' });
@@ -394,6 +421,3 @@ server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📊 Health check available at http://localhost:${PORT}/api/health`);
 });
-
-// Initialize database connection
-connectDb();
