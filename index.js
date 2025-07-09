@@ -23,6 +23,14 @@ app.use(cors({
   credentials: true
 }));
 
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', req.headers.origin || 'https://demo.genixai.info');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  next();
+});
+
 // Increase payload limits for audio files
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -220,15 +228,27 @@ connectDb();
 
 // Routes that need database connection
 app.get('/get-token', async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || 'https://demo.genixai.info');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  console.log('Request Origin:', req.headers.origin);
+  console.log('CORS Headers Set:', {
+    'Access-Control-Allow-Origin': res.get('Access-Control-Allow-Origin'),
+    'Access-Control-Allow-Credentials': res.get('Access-Control-Allow-Credentials'),
+  });
+
   try {
     const userIdentity = await identityClient.createUser();
     const tokenResponse = await identityClient.getToken(userIdentity, ['voip', 'chat']);
     res.json({
       userId: userIdentity.communicationUserId,
       token: tokenResponse.token,
-      expiresOn: tokenResponse.expiresOn
+      expiresOn: tokenResponse.expiresOn,
     });
   } catch (error) {
+    console.error('Error in /get-token:', error);
     res.status(500).send(error.message);
   }
 });
