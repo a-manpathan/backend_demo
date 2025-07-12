@@ -19,7 +19,7 @@ const app = express();
 
 // Configure CORS properly
 app.use(cors({
-  origin: ['http://localhost:8080','http://192.168.2.6:8080'],
+  origin: ['http://localhost:8080','http://192.168.2.6:8080','https://demo.genixai.info'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
@@ -35,7 +35,7 @@ const server = http.createServer(app);
 // Initialize Socket.io
 const io = new Server(server, {
   cors: {
-    origin: ['http://localhost:8080','http://192.168.2.6:8080'], // Match frontend origins
+    origin: ['http://localhost:8080','http://192.168.2.6:8080','https://demo.genixai.info'], // Match frontend origins
     methods: ['GET', 'POST'],
     credentials: true
   }
