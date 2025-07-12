@@ -3,6 +3,7 @@ import sql from 'mssql';
 import cors from 'cors';
 import bcrypt from 'bcrypt';
 import dotenv from 'dotenv';
+import fetch from 'node-fetch';
 import speechToTextRoutes from './routes/speechToText.js';
 import translationRoutes from './routes/translation.js';
 import prescriptionRoutes from './routes/prescription.js';
@@ -10,6 +11,7 @@ import transcriptAnalysisRoutes from './routes/transcriptAnalysis.js';
 import { CommunicationIdentityClient } from '@azure/communication-identity';
 import http from 'http';
 import { Server } from 'socket.io';
+import KeepAliveService from './services/keepAliveService.js';
 
 dotenv.config();
 
@@ -80,6 +82,7 @@ const dbConfig = {
 // Global connection pool
 let dbPool = null;
 let isConnected = false;
+let keepAliveService = null;
 
 // Middleware to check database connection - MOVED HERE BEFORE USAGE
 const checkDbConnection = (req, res, next) => {
@@ -116,6 +119,12 @@ const connectDb = async () => {
     console.log('✅ Successfully connected to Azure SQL Database');
     
     await createTablesIfNotExist();
+    
+    // Start keep-alive service
+    if (!keepAliveService) {
+      keepAliveService = new KeepAliveService(dbPool);
+      keepAliveService.start();
+    }
     
   } catch (err) {
     isConnected = false;
@@ -218,6 +227,17 @@ const createTablesIfNotExist = async () => {
 // Initialize database connection
 connectDb();
 
+// Self-ping to keep Azure App Service awake
+setInterval(() => {
+  const selfPingUrl = process.env.WEBSITE_HOSTNAME 
+    ? `https://${process.env.WEBSITE_HOSTNAME}/api/health`
+    : `http://localhost:${PORT}/api/health`;
+  
+  fetch(selfPingUrl)
+    .then(() => console.log('Self-ping successful:', new Date().toISOString()))
+    .catch(err => console.log('Self-ping failed:', err.message));
+}, 14 * 60 * 1000); // Every 14 minutes
+
 // Routes that need database connection
 app.get('/get-token', async (req, res) => {
   try {
@@ -237,11 +257,11 @@ app.get('/api/get-doctor-acs-id', checkDbConnection, async (req, res) => {
   try {
     const request = dbPool.request();
     const result = await request
-      .query('SELECT acs_user_id FROM users WHERE user_type = \'doctor\' AND id = 9'); // Adjust query logic
-    if (result.recordset.length > 0) {
+      .query('SELECT TOP 1 acs_user_id FROM users WHERE user_type = \'doctor\' AND acs_user_id IS NOT NULL ORDER BY id');
+    if (result.recordset.length > 0 && result.recordset[0].acs_user_id) {
       res.json({ acsUserId: result.recordset[0].acs_user_id });
     } else {
-      res.status(404).json({ error: 'Doctor not found' });
+      res.status(404).json({ error: 'No doctor with ACS ID found. Please create a doctor account first.' });
     }
   } catch (error) {
     console.error('Error fetching doctor ACS ID:', error);
@@ -258,6 +278,7 @@ app.get('/api/health', async (req, res) => {
         database: 'disconnected',
         message: 'Database connection not established',
         timestamp: new Date().toISOString(),
+        uptime: process.uptime()
       });
     }
 
@@ -268,6 +289,8 @@ app.get('/api/health', async (req, res) => {
       status: 'healthy',
       database: 'connected',
       timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      keepAlive: keepAliveService ? 'active' : 'inactive'
     });
   } catch (err) {
     console.error('Health check error:', err);
@@ -276,6 +299,36 @@ app.get('/api/health', async (req, res) => {
       database: 'error',
       error: err.message,
       timestamp: new Date().toISOString(),
+      uptime: process.uptime()
+    });
+  }
+});
+
+// Database health endpoint
+app.get('/api/db-health', async (req, res) => {
+  try {
+    if (!isConnected || !dbPool) {
+      return res.status(503).json({
+        status: 'error',
+        database: 'disconnected',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const request = dbPool.request();
+    await request.query('SELECT GETDATE() as current_time');
+    
+    res.json({
+      status: 'ok',
+      database: 'connected',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      database: 'disconnected',
+      error: error.message,
+      timestamp: new Date().toISOString()
     });
   }
 });
@@ -402,6 +455,9 @@ app.use('/api/transcript', transcriptAnalysisRoutes);
 // Graceful shutdown
 process.on('SIGINT', async () => {
   console.log('Shutting down gracefully...');
+  if (keepAliveService) {
+    keepAliveService.stop();
+  }
   if (dbPool) {
     await dbPool.close();
   }
@@ -410,6 +466,9 @@ process.on('SIGINT', async () => {
 
 process.on('SIGTERM', async () => {
   console.log('Shutting down gracefully...');
+  if (keepAliveService) {
+    keepAliveService.stop();
+  }
   if (dbPool) {
     await dbPool.close();
   }
