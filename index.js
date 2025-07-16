@@ -437,6 +437,93 @@ app.post('/api/login', checkDbConnection, async (req, res) => {
   }
 });
 
+app.get('/api/patients', checkDbConnection, async (req, res) => {
+  try {
+    const request = dbPool.request();
+    const result = await request
+      .query('SELECT id, name, email, user_type, acs_user_id FROM users WHERE user_type = \'patient\' ORDER BY created_at DESC');
+    
+    res.json(result.recordset);
+  } catch (error) {
+    console.error('Error fetching patients:', error);
+    res.status(500).json({ error: 'Failed to fetch patients' });
+  }
+});
+
+app.get('/api/patient/me', checkDbConnection, async (req, res) => {
+  try {
+    const request = dbPool.request();
+    const result = await request
+      .query('SELECT TOP 1 id, name, email, acs_user_id FROM users WHERE user_type = \'patient\' ORDER BY id DESC');
+    
+    if (result.recordset.length > 0) {
+      res.json(result.recordset[0]);
+    } else {
+      res.status(404).json({ error: 'Patient not found' });
+    }
+  } catch (error) {
+    console.error('Error fetching patient info:', error);
+    res.status(500).json({ error: 'Failed to fetch patient info' });
+  }
+});
+
+app.post('/get-patient-token', async (req, res) => {
+  try {
+    const { acsUserId } = req.body;
+    if (!acsUserId) {
+      return res.status(400).json({ error: 'ACS User ID required' });
+    }
+    
+    const tokenResponse = await identityClient.getToken({ communicationUserId: acsUserId }, ['voip', 'chat']);
+    res.json({
+      userId: acsUserId,
+      token: tokenResponse.token,
+      expiresOn: tokenResponse.expiresOn
+    });
+  } catch (error) {
+    console.error('Error getting patient token:', error);
+    res.status(500).json({ error: 'Failed to get token' });
+  }
+});
+
+app.get('/api/patient/me', checkDbConnection, async (req, res) => {
+  try {
+    // This would normally get user ID from session/JWT token
+    // For now, get the first patient as a demo
+    const request = dbPool.request();
+    const result = await request
+      .query('SELECT TOP 1 id, name, email, acs_user_id FROM users WHERE user_type = \'patient\' ORDER BY id DESC');
+    
+    if (result.recordset.length > 0) {
+      res.json(result.recordset[0]);
+    } else {
+      res.status(404).json({ error: 'Patient not found' });
+    }
+  } catch (error) {
+    console.error('Error fetching patient info:', error);
+    res.status(500).json({ error: 'Failed to fetch patient info' });
+  }
+});
+
+app.post('/get-patient-token', async (req, res) => {
+  try {
+    const { acsUserId } = req.body;
+    if (!acsUserId) {
+      return res.status(400).json({ error: 'ACS User ID required' });
+    }
+    
+    const tokenResponse = await identityClient.getToken({ communicationUserId: acsUserId }, ['voip', 'chat']);
+    res.json({
+      userId: acsUserId,
+      token: tokenResponse.token,
+      expiresOn: tokenResponse.expiresOn
+    });
+  } catch (error) {
+    console.error('Error getting patient token:', error);
+    res.status(500).json({ error: 'Failed to get token' });
+  }
+});
+
 app.get('/api/test', (req, res) => {
   res.json({
     message: 'Backend is working!',
