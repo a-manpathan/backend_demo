@@ -8,6 +8,7 @@ import speechToTextRoutes from './routes/speechToText.js';
 import translationRoutes from './routes/translation.js';
 import prescriptionRoutes from './routes/prescription.js';
 import transcriptAnalysisRoutes from './routes/transcriptAnalysis.js';
+import preScreeningRoutes from './routes/preScreening.js';
 import { CommunicationIdentityClient } from '@azure/communication-identity';
 import http from 'http';
 import { Server } from 'socket.io';
@@ -450,8 +451,17 @@ app.get('/api/patients', checkDbConnection, async (req, res) => {
   }
 });
 
-app.get('/api/patient/me', checkDbConnection, async (req, res) => {
+ // TODO: Implement proper JWT-based authentication middleware
+const authenticateUser = (req, res, next) => {
+  // For now, this is a placeholder. In production, you would validate a token.
+  // req.user = { id: 123, userType: 'patient' }; // Example user from token
+  next();
+};
+
+app.get('/api/patient/me', checkDbConnection, /* authenticateUser, */ async (req, res) => {
   try {
+    // This would normally get user ID from session/JWT token
+    // For now, get the first patient as a demo
     const request = dbPool.request();
     const result = await request
       .query('SELECT TOP 1 id, name, email, acs_user_id FROM users WHERE user_type = \'patient\' ORDER BY id DESC');
@@ -538,6 +548,7 @@ app.use('/api/speech', speechToTextRoutes);
 app.use('/api/translate', translationRoutes);
 app.use('/api/prescription', prescriptionRoutes);
 app.use('/api/transcript', transcriptAnalysisRoutes);
+app.use('/api/pre-screening', preScreeningRoutes);
 
 // Graceful shutdown
 process.on('SIGINT', async () => {

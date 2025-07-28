@@ -139,4 +139,83 @@ Ensure the JSON is properly formatted and contains meaningful medical informatio
   }
 });
 
+router.post('/summarize', async (req, res) => {
+  try {
+    const { transcript } = req.body;
+    
+    if (!transcript) {
+      return res.status(400).json({ error: 'Transcript is required' });
+    }
+
+    if (!AZURE_AI_API_KEY) {
+      return res.status(500).json({ error: 'Azure AI API key not configured' });
+    }
+
+    console.log('Generating summary for transcript:', transcript.substring(0, 100) + '...');
+
+    const systemPrompt = `You are a medical assistant that creates concise summaries of patient-doctor conversations. 
+
+Analyze the provided transcript and create a brief, professional summary that captures:
+1. Main health concerns or symptoms discussed
+2. Key points from the conversation
+3. Any important medical information mentioned
+4. Overall context of the consultation
+
+Keep the summary concise (2-4 sentences) and focus on the most important medical information discussed.`;
+
+    const response = await retryRequest(
+      `${AZURE_AI_ENDPOINT}/openai/deployments/gpt-4o-mini/chat/completions?api-version=2024-12-01-preview`,
+      {
+        messages: [
+          {
+            role: 'system',
+            content: systemPrompt
+          },
+          {
+            role: 'user',
+            content: `Please create a concise summary of this patient-doctor conversation:\n\n${transcript}`
+          }
+        ],
+        max_tokens: 300,
+        temperature: 0.3,
+        top_p: 0.9,
+      },
+      {
+        'Content-Type': 'application/json',
+        'api-key': AZURE_AI_API_KEY,
+      }
+    );
+
+    const summary = response.data.choices[0].message.content.trim();
+    
+    console.log('Summary generated successfully');
+    
+    res.json({
+      summary: summary,
+      summarizedAt: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Summary generation error:', error.response?.data || error.message);
+    
+    if (error.response) {
+      res.status(error.response.status).json({ 
+        error: 'Summary generation failed', 
+        details: error.response.data,
+        status: error.response.status
+      });
+    } else if (error.request) {
+      res.status(500).json({ 
+        error: 'Network error - unable to reach Azure AI service', 
+        details: error.message 
+      });
+    } else {
+      res.status(500).json({ 
+        error: 'Summary generation failed', 
+        details: error.message 
+      });
+    }
+  }
+});
+
 export default router;
