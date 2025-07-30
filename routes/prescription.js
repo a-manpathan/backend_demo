@@ -73,7 +73,9 @@ IMPORTANT DISCLAIMERS:
 - Always recommend consulting with a licensed physician
 - Do not provide specific medical advice for real patients
 
-Based on the provided patient information, generate a detailed prescription in the following format:
+Based on the provided patient information, generate a detailed prescription with medications specifically tailored to the symptoms and diagnosis provided. DO NOT use generic medications like "Paracetamol 500mg - 1 tablet, 3 times a day after food for 3 days" and "Amoxicillin 250mg - 1 capsule, 2 times a day for 5 days" for every condition.
+
+Generate the prescription in the following format:
 
 **PRESCRIPTION**
 
@@ -83,35 +85,37 @@ Based on the provided patient information, generate a detailed prescription in t
 - Date: [Current Date]
 
 **Medications:**
-1. [Medication Name] [Strength]
-   - Dosage: [Amount and frequency]
-   - Duration: [Treatment period]
-   - Instructions: [Special instructions]
+[Generate 2-4 medications specifically appropriate for the symptoms and diagnosis provided. Each medication should be relevant to the condition being treated]
+1. [Specific Medication Name] [Appropriate Strength]
+   - Dosage: [Condition-specific amount and frequency]
+   - Duration: [Appropriate treatment period]
+   - Instructions: [Relevant special instructions]
 
-2. [Additional medications as needed]
+2. [Additional condition-specific medications as needed]
 
 **General Instructions:**
-- [Lifestyle recommendations]
-- [Dietary advice if applicable]
+- [Lifestyle recommendations specific to the condition]
+- [Dietary advice if applicable to the condition]
 - [Follow-up recommendations]
 
 **Warnings & Precautions:**
-- [Important warnings]
+- [Important warnings specific to the medications prescribed]
 - [Drug interactions to avoid]
 - [When to seek immediate medical attention]
 
 **Follow-up:**
-- [Recommended follow-up timeline]
-- [What to monitor]
+- [Recommended follow-up timeline based on condition]
+- [What to monitor for the specific condition]
 
 Please ensure all recommendations are:
-- Evidence-based and appropriate for the symptoms/diagnosis
-- Include proper dosages and frequencies
+- Evidence-based and specifically appropriate for the symptoms/diagnosis provided
+- Include proper dosages and frequencies for the specific condition
 - Consider potential drug interactions and contraindications
 - Include clear instructions for the patient
 - Emphasize the need for professional medical consultation
+- AVOID using the same generic medications for different conditions
 
-Generate a professional, comprehensive prescription based on the provided information.`;
+Generate a professional, comprehensive prescription with condition-specific medications based on the provided information.`;
 
     const response = await retryRequest(
       `${AZURE_AI_ENDPOINT}/openai/deployments/gpt-4o-mini/chat/completions?api-version=2024-12-01-preview`,
